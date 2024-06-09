@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script src="wrapWebGL2.js"></script>
+    <meta charset="utf-8">
+    <title>Single-file Example</title>
+    <!-- part of a multi-part demonstration: see cs418.cs.illinois.edu -->
+    
+    <script src="math.js"></script>
+    <script id="vert" type="glsl">
+        #version 300 es
+        layout(location=0) in vec4 position;
+        layout(location=1) in vec3 normal;
+        uniform mat4 mv;
+        uniform mat4 p;
+        out vec3 vnormal;
+        void main() {
+            gl_Position = p * mv * position;
+            vnormal = normal;
+        }
+    </script>
+
+
+    <!-- The source code of a fragment shader. -->
+    <script id="frag" type="glsl">
+        #version 300 es
+        precision highp float;
+        uniform vec4 color;
+
+        uniform vec3 lightdir;
+        uniform vec3 lightcolor;
+        uniform vec3 halfway;
+
+        out vec4 fragColor;
+        in vec3 vnormal;
+        void main() {
+            vec3 n = normalize(vnormal);
+            float lambert = max(dot(n, lightdir), 0.0);
+            float blinn = pow(max(dot(n, halfway), 0.0), 150.0);
+            fragColor = vec4(
+                color.rgb * (lightcolor * lambert)
+                + blinn
+            , color.a);
+        }
+    </script>
+    <script>
+        function fillScreen() {
+            let canvas = document.querySelector('canvas')
+            document.body.style.margin = '0'
+            canvas.style.width = '100%'
+            canvas.style.height = '100%'
+            canvas.width = canvas.clientWidth
+            canvas.height = canvas.clientHeight
+            canvas.style.width = ''
+            canvas.style.height = ''
+            gl.viewport(0,0, canvas.width, canvas.height)
+            // TO DO: compute a new projection matrix based on the width/height aspect ratio
+            if (window.gl) {
+                gl.viewport(0,0, canvas.width, canvas.height)
+                window.p = m4perspNegZ(0.1, 10, 1, canvas.width, canvas.height)
+            }
+        }
+
+        /**
+         * Given the source code of a vertex and fragment shader, compiles them,
+         * and returns the linked program.
+         */
+        function compileShader(vs_source, fs_source) {
+            const vs = gl.createShader(gl.VERTEX_SHADER)
+            gl.shaderSource(vs, vs_source)
+            gl.compileShader(vs)
+            if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(vs))
+                throw Error("Vertex shader compilation failed")
+            }
+
+            const fs = gl.createShader(gl.FRAGMENT_SHADER)
+            gl.shaderSource(fs, fs_source)
+            gl.compileShader(fs)
+            if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(fs))
+                throw Error("Fragment shader compilation failed")
+            }
+
+            const program = gl.createProgram()
+            gl.attachShader(program, vs)
+            gl.attachShader(program, fs)
+            gl.linkProgram(program)
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error(gl.getProgramInfoLog(program))
+                throw Error("Linking failed")
+            }
+            
+            const uniforms = {}
+            for(let i=0; i<gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS); i+=1) {
+                let info = gl.getActiveUniform(program, i)
+                uniforms[info.name] = gl.getUniformLocation(program, info.name)
+            }
+            program.uniforms = uniforms
+
+            return program
+        }
+
+        function supplyDataBuffer(data, loc, mode) {
+            if (mode === undefined) mode = gl.STATIC_DRAW
+            
+            const buf = gl.createBuffer()
+            gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+            const f32 = new Float32Array(data.flat())
+            gl.bufferData(gl.ARRAY_BUFFER, f32, mode)
+            
+            gl.vertexAttribPointer(loc, data[0].length, gl.FLOAT, false, 0, 0)
+            gl.enableVertexAttribArray(loc)
+            
+            return buf;
+        }
+
+        function setupGeomery(geom) {
+            if (geom === undefined) {
+                return;
+            }
+            var triangleArray = gl.createVertexArray()
+            gl.bindVertexArray(triangleArray)
+            // console.log(geom.attributes.length);
+            for(let i=0; i<geom.attributes.length; i+=1) {
+                let data = geom.attributes[i]
+                supplyDataBuffer(data, i)
+            }
+            var indices = new Uint16Array(geom.triangles.flat())
+            var indexBuffer = gl.createBuffer()
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+
+            return {
+                mode: gl.TRIANGLES,
+                count: indices.length,
+                type: gl.UNSIGNED_SHORT,
+                vao: triangleArray
+            }
+        }
+
+        let geometry; 
+
+        function generateFaulting(gridsize, faults, geometry) {
+            for (let f = 0; f < faults; f+=1) {
+                let fault = [(Math.random() * 2) - 1, (Math.random() * 2) - 1, 0]
+                const angle = Math.random() * 2 * Math.PI;
+                let n = [Math.cos(angle), Math.sin(angle), 0];
+                for (let i = 0; i < geometry.attributes[0].length; i+=1) {
+                    let b = sub(geometry.attributes[0][i], fault);
+                    const delta = 2.0
+                    if (dot(b, n) >= 0) {
+                        geometry.attributes[0][i] = add(geometry.attributes[0][i], [0, 0, delta])
+                    } else {
+                        geometry.attributes[0][i] = sub(geometry.attributes[0][i], [0, 0, delta])
+                    }
+                }
+            }
+            // console.log('faulting', geometry.attributes)
+        }
+
+        // function generateFaulting(gridsize, faults, geometry) {
+        //     for (let f = 0; f < faults; f+=1) {
+        //         let fault = [(Math.random() * 10) - 5, (Math.random() * 10) - 5, 0]
+        //         const angle = Math.random() * 2 * Math.PI;
+        //         let n = [Math.cos(angle), Math.sin(angle), 0];
+        //         for (let i = 0; i < geometry.attributes[0].length; i+=1) {
+        //             let b = sub(geometry.attributes[0][i], fault);
+        //             const delta = 0.03;
+        //             const distance = Math.sqrt(b[0]**2 + b[1]**2 + b[2] **2);
+        //             const coef = (1 - (distance/(Math.random() + distance))** 2) ** 2;
+        //             const dynamicDelta = delta * coef;
+        //             if (dot(b, n) >= 0) {
+        //                 geometry.attributes[0][i] = add(geometry.attributes[0][i], [0, 0, dynamicDelta]);
+        //             } else {
+        //                 geometry.attributes[0][i] = sub(geometry.attributes[0][i], [0, 0, dynamicDelta]);
+        //             }
+        //         }
+        //     }
+        //     // console.log('faulting', geometry.attributes)
+        // }
+
+        function normalizeHeight(geometry) {
+            let min = 0;
+            let max = 0;
+            // let min = Math.min(...geometry.attributes[0].flat());
+            // let max = Math.max(...geometry.attributes[0].flat());
+
+            for (let i = 0; i < geometry.attributes[0].length; i+=1) {
+                for (let j = 0; j < geometry.attributes[0][i].length; j+=1) {
+                    min = Math.min(min, geometry.attributes[0][i][2]);
+                    max = Math.max(max, geometry.attributes[0][i][2]);
+                }
+            }
+
+            const c = 1.0;
+            if (max - min !== 0) {
+                for (let i = 0; i < geometry.attributes[0].length; i+=1) {            
+                    geometry.attributes[0][i][2] = c * ((geometry.attributes[0][i][2] - (max + min) * 0.5)/(max- min));
+                }
+            }
+
+            // console.log('normalizeHeight', geometry.attributes)
+        }
+
+        function computeGridBasedNormals(geometry, gridsize) {
+            let ni = geometry.attributes.length
+            geometry.attributes[ni] = [];
+            for(let i = 0; i < geometry.attributes[0].length; i+=1) {
+                geometry.attributes[ni].push([0,0,0])
+            }
+            for (let i = 0; i < gridsize; i+=1) {
+                for (let j = 0; j < gridsize; j+=1) {
+                    //north to south  -- Z axis
+                    const nIdx = i > 0 ? (i - 1) * gridsize + j : i * gridsize + j;
+                    const n = geometry.attributes[0][nIdx];
+                    const sIdx = i < gridsize - 1 ? (i + 1) * gridsize + j : i * gridsize + j;
+                    const s = geometry.attributes[0][sIdx];
+                    //west to east -- X axis
+                    const wIdx = j > 0 ? i * gridsize + (j - 1) : i * gridsize + j;
+                    const w = geometry.attributes[0][wIdx];
+                    const eIdx = j < gridsize - 1 ? i * gridsize + (j + 1) : i * gridsize + j;
+                    const e = geometry.attributes[0][eIdx];
+                    //nw, ne, sw, se
+                    const neIdx = i > 0 && j < gridsize - 1 ? (i - 1) * gridsize + (j + 1) : nIdx; // NE neighbor
+                    const nwIdx = i > 0 && j > 0 ? (i - 1) * gridsize + (j - 1) : nIdx; // NW neighbor
+                    const seIdx = i < gridsize - 1 && j < gridsize - 1 ? (i + 1) * gridsize + (j + 1) : sIdx; // SE neighbor
+                    const swIdx = i < gridsize - 1 && j > 0 ? (i + 1) * gridsize + (j - 1) : sIdx; // SW neighbor
+
+                    const nw = geometry.attributes[0][nwIdx];
+                    const ne = geometry.attributes[0][neIdx];
+                    const sw = geometry.attributes[0][swIdx];
+                    const se = geometry.attributes[0][seIdx];
+
+                    // console.log([i, j], nIdx, sIdx, wIdx, eIdx, nwIdx, neIdx, swIdx, seIdx)
+                    let sub1 = sub(n, s);
+                    let sub2 = sub(w, e);
+                    let sub3 = sub(ne, sw);
+                    let sub4 = sub(nw, se);
+                    let cross1 = cross(sub1, sub2);
+                    let cross2 = cross(sub3, sub4);
+                    
+                    let weighted = div((add(mul(cross1, 2), mul(cross2, 1))), 3); 
+                    //console.log(weighted)
+                    geometry.attributes[ni][i * gridsize + j] = normalize(weighted);
+                }
+
+            }
+            console.log('normals', geometry);
+        }
+
+        function addWeathering(geometry, gridsize, weathering) {
+            // let newGeometry = structuredClone(geometry);
+            // for (let w = 0; w < weathering; w+=1) {
+            //     const oldGeometry = structuredClone(newGeometry);
+            //     newGeometry = getNeighbourMeans(oldGeometry, gridsize);
+            //     console.log(newGeometry);
+            // }
+            // geometry = newGeometry;
+            getNeighbourMeans(geometry, gridsize, weathering);
+        }
+
+        function getNeighbourMeans(geometry, gridsize, weathering) {
+            let newGeometry = structuredClone(geometry);
+            for (let w = 0; w < weathering; w+=1) {
+                for (let i = 0; i < gridsize; i+=1) {
+                    for (let j = 0; j < gridsize; j+=1) {
+                        let meanPosition = [0, 0, 0];
+                        //north to south  -- Z axis
+                        const sIdx = i < gridsize - 1 ? (i + 1) * gridsize + j : i * gridsize + j;
+                        const nIdx = i > 0 ? (i - 1) * gridsize + j : i * gridsize + j;
+                        const n = newGeometry.attributes[0][nIdx];
+                        meanPosition = add(meanPosition, n);
+                        const s = newGeometry.attributes[0][sIdx];
+                        meanPosition = add(meanPosition, s);
+                        //west to east -- X axis
+                        const wIdx = j > 0 ? i * gridsize + (j - 1) : i * gridsize + j;
+                        const w = newGeometry.attributes[0][wIdx];
+                        meanPosition = add(meanPosition, w);
+                        const eIdx = j < gridsize - 1 ? i * gridsize + (j + 1) : i * gridsize + j;
+                        const e = newGeometry.attributes[0][eIdx];
+                        meanPosition = add(meanPosition, e);
+                        //nw, ne, sw, se
+                        const neIdx = i > 0 && j < gridsize - 1 ? (i - 1) * gridsize + (j + 1) : nIdx; // NE neighbor
+                        const nwIdx = i > 0 && j > 0 ? (i - 1) * gridsize + (j - 1) : nIdx; // NW neighbor
+                        const seIdx = i < gridsize - 1 && j < gridsize - 1 ? (i + 1) * gridsize + (j + 1) : sIdx; // SE neighbor
+                        const swIdx = i < gridsize - 1 && j > 0 ? (i + 1) * gridsize + (j - 1) : sIdx; // SW neighbor
+
+                        const nw = newGeometry.attributes[0][nwIdx];
+                        meanPosition = add(meanPosition, nw);
+                        const ne = newGeometry.attributes[0][neIdx];
+                        meanPosition = add(meanPosition, ne);
+                        const sw = newGeometry.attributes[0][swIdx];
+                        meanPosition = add(meanPosition, sw);
+                        const se = newGeometry.attributes[0][seIdx];
+                        meanPosition = add(meanPosition, se);
+
+                        //meanPosition = div(meanPosition, 8);
+
+                        // console.log(i, j, geometry.attributes[0][i * gridsize + j], meanPosition);
+                        let smoothing = div(add(mul(newGeometry.attributes[0][i * gridsize + j], 4), meanPosition), 12);
+                        newGeometry.attributes[0][i * gridsize + j] = smoothing;
+                        //geometry.attributes[0][i][2]= newGeometry.attributes[0][i][2];
+                        // geometry = newGeometry;
+                    }      
+                }
+            }
+
+            for (let i = 0; i < geometry.attributes[0].length; i+=1) {
+                geometry.attributes[0][i][2]= newGeometry.attributes[0][i][2];
+            }
+            console.log('weathering', geometry, newGeometry);
+            // return newGeometry;
+        }
+
+        function Geometry() {
+            this.triangles = [];
+            this.attributes = [[]];
+        }
+        function generateFlatGrid(gridsize) {
+            // console.log('before', geometry);
+            for (let i=0; i < gridsize; i+=1) {
+                for (let j = 0; j < gridsize; j+=1) {
+                    /*normalize to -1, 1*/
+                    const x = i / (gridsize - 1) * 2 - 1;
+                    const y = j / (gridsize - 1) * 2 - 1;
+                    geometry.attributes[0].push([x, y, 0.0]);
+
+                    if (i < gridsize - 1 && j < gridsize - 1) {
+                        const triangle_1 = [i + j * gridsize, i + j * gridsize + 1, i + gridsize * (j + 1)]
+                        const triangle_2 = [i + j * gridsize + 1, i + gridsize * (j + 1), i + gridsize * (j + 1) + 1]
+                        geometry.triangles.push(triangle_1)
+                        geometry.triangles.push(triangle_2) 
+                    }
+                }
+            }
+            // console.log('flat grid', geometry);
+        }
+        /** Draw one frame */
+        const IdentityMatrix = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
+        function draw(seconds) {
+            if (window.geom == null) {
+                return;
+            }
+
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+            gl.useProgram(program)
+
+            gl.bindVertexArray(geom.vao)
+
+            gl.uniform4fv(program.uniforms.color, [216/255,197/255,150/255,1.0])
+            let cameraPos = [1.8*Math.cos(seconds*0.5),1.5*Math.sin(seconds*0.5),2.5]
+            let ld = normalize([1,1,1])
+            let h = normalize(add(ld, normalize(cameraPos)))
+            gl.uniform3fv(program.uniforms.lightdir, ld)
+            gl.uniform3fv(program.uniforms.lightcolor, [1,1,1])
+            gl.uniform3fv(program.uniforms.halfway, h)
+            let m = IdentityMatrix;
+            let v = m4view(cameraPos, [0,0,0], [0,0,1])
+            gl.uniformMatrix4fv(program.uniforms.mv, false, m4mul(v,m))
+            gl.uniformMatrix4fv(program.uniforms.p, false, p)
+            
+            gl.drawElements(geom.mode, geom.count, geom.type, 0)
+
+        }
+
+        function generateGrid(gridsize, faults, weathering) {
+            generateFlatGrid(gridsize);
+            generateFaulting(gridsize, faults, geometry);
+            normalizeHeight(geometry);
+            addWeathering(geometry, gridsize, weathering);
+            computeGridBasedNormals(geometry, gridsize);
+            window.geom = setupGeomery(geometry);
+        }
+
+        function tick(milliseconds) {
+            let seconds = milliseconds / 1000;
+            draw(seconds)
+            requestAnimationFrame(tick)
+        }
+
+        /** Compile, link, set up geometry */
+        window.addEventListener('load', async (event) => {
+            window.gl = document.querySelector('canvas').getContext('webgl2',
+                // optional configuration object: see https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/getContext
+                {antialias: false, depth:true, preserveDrawingBuffer:true}
+            )
+            let vs = document.querySelector('#vert').textContent.trim()
+            let fs = document.querySelector('#frag').textContent.trim()
+            window.program = compileShader(vs,fs)
+            gl.enable(gl.DEPTH_TEST)
+            gl.enable(gl.BLEND)
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+            window.geom = null;
+            fillScreen()
+            window.addEventListener('resize', fillScreen)
+            requestAnimationFrame(tick)
+        })
+
+        // let weathering = document.querySelector('#weathering');
+        // // if (weathering) {
+        //     weathering.addEventListener('change', function() {
+        //     console.log('Label has changed to: ' + label.textContent);
+        //     weathering = Number(document.querySelector('#weathering').value) || 0;
+        //     const gridsize = Number(document.querySelector('#gridsize').value) || 2
+        //     const faults = Number(document.querySelector('#faults').value) || 0
+        //     addWeathering(geometry, gridsize, weathering);
+        //     window.geom = setupGeomery(geometry);
+        //     });
+        // }
+
+        document.addEventListener('DOMContentLoaded', (event) => {
+            document.querySelector('#submit').addEventListener('click', event => {
+                const gridsize = Number(document.querySelector('#gridsize').value) || 2
+                const faults = Number(document.querySelector('#faults').value) || 0
+                // TO DO: generate a new gridsize-by-gridsize grid here, then apply faults to it
+                const weathering = Number(document.querySelector('#weathering').value) || 0
+                geometry = new Geometry();
+                // console.log('initial', geometry);
+                generateGrid(gridsize, faults, weathering);
+                // console.log(geometry);
+            });
+            document.querySelector('#weathering').addEventListener('change', function() {
+                // console.log('Label has changed to: ' + label.textContent);
+                const weathering = Number(document.querySelector('#weathering').value) || 0;
+                const gridsize = Number(document.querySelector('#gridsize').value) || 2
+                const faults = Number(document.querySelector('#faults').value) || 0
+                addWeathering(geometry, gridsize, weathering);
+                computeGridBasedNormals(geometry, gridsize);
+                window.geom = setupGeomery(geometry);
+            });
+
+        });
+
+    </script>
+    <style>
+    body {
+        margin: 0; border: none; padding: 0;
+        display: flex; flex-direction: column;
+        width: 100%; height: 100vh;
+    }
+    .controls {
+        flex: 0 0 auto;
+    }
+    .controls > * { margin: 1em; }
+    .display {
+        flex-grow: 1;
+        line-height: 0rem;
+    }
+    </style>
+</head>
+<body>
+<form class="controls" action="javascript:void(0);">
+    <label>Grid size: <input id="gridsize" type="number" value="50"/></label>
+    <label>Faults: <input id="faults" type="number" value="50"/></label>
+    <label>Weathering: <input id="weathering" type="number" value="0"/></label>
+    <input id="submit" type="submit" value="Regenerate Terrain"/>
+</form>
+<div class="display">
+    <canvas width="300" height="300"></canvas>
+</div>
+</body>
+</html>

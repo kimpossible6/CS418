@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script src="wrapWebGL2.js"></script>
+    <meta charset="utf-8">
+    <title>Single-file Example</title>
+    <!-- part of a multi-part demonstration: see cs418.cs.illinois.edu -->
+    
+    <script src="math.js"></script>
+    <script src="mesh.js"></script>
+    <script id="vert" type="glsl">
+        #version 300 es
+        layout(location=0) in vec4 position;
+        layout(location=1) in vec3 normal;
+        uniform mat4 mv;
+        uniform mat4 p;
+        out vec3 vnormal;
+        void main() {
+            gl_Position = p * mv * position;
+            vnormal = normal;
+        }
+    </script>
+
+
+    <!-- The source code of a fragment shader. -->
+    <script id="frag" type="glsl">
+        #version 300 es
+        precision highp float;
+        uniform vec4 color;
+
+        uniform vec3 lightdir;
+        uniform vec3 lightcolor;
+        uniform vec3 halfway;
+
+        out vec4 fragColor;
+        in vec3 vnormal;
+        void main() {
+            vec3 n = normalize(vnormal);
+            float lambert = max(dot(n, lightdir), 0.0);
+            float blinn = pow(max(dot(n, halfway), 0.0), 150.0);
+            fragColor = vec4(
+                color.rgb * (lightcolor * lambert)
+                + (lightcolor * blinn)
+            , color.a);
+        }
+    </script>
+    <script>
+        function fillScreen() {
+            let canvas = document.querySelector('canvas')
+            document.body.style.margin = '0'
+            canvas.style.width = '100%'
+            canvas.style.height = '100%'
+            canvas.width = canvas.clientWidth
+            canvas.height = canvas.clientHeight
+            canvas.style.width = ''
+            canvas.style.height = ''
+            gl.viewport(0,0, canvas.width, canvas.height)
+            // TO DO: compute a new projection matrix based on the width/height aspect ratio
+            if (window.gl) {
+                gl.viewport(0,0, canvas.width, canvas.height)
+                window.p = m4perspNegZ(0.1, 10, 1, canvas.width, canvas.height)
+            }
+        }
+
+        /**
+         * Given the source code of a vertex and fragment shader, compiles them,
+         * and returns the linked program.
+         */
+        function compileShader(vs_source, fs_source) {
+            const vs = gl.createShader(gl.VERTEX_SHADER)
+            gl.shaderSource(vs, vs_source)
+            gl.compileShader(vs)
+            if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(vs))
+                throw Error("Vertex shader compilation failed")
+            }
+
+            const fs = gl.createShader(gl.FRAGMENT_SHADER)
+            gl.shaderSource(fs, fs_source)
+            gl.compileShader(fs)
+            if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(fs))
+                throw Error("Fragment shader compilation failed")
+            }
+
+            const program = gl.createProgram()
+            gl.attachShader(program, vs)
+            gl.attachShader(program, fs)
+            gl.linkProgram(program)
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error(gl.getProgramInfoLog(program))
+                throw Error("Linking failed")
+            }
+            
+            const uniforms = {}
+            for(let i=0; i<gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS); i+=1) {
+                let info = gl.getActiveUniform(program, i)
+                uniforms[info.name] = gl.getUniformLocation(program, info.name)
+            }
+            program.uniforms = uniforms
+
+            return program
+        }
+
+        function areVerticesEqual(v1, v2) {
+            let isEqual = false;
+            if (v1[0] === v2[0] && v1[1] === v2[1] && v1[2] === v2[2]) {
+                isEqual = true;
+            }
+            return isEqual;
+        }
+
+        function supplyDataBuffer(data, loc, mode) {
+            if (mode === undefined) mode = gl.STATIC_DRAW
+            
+            const buf = gl.createBuffer()
+            gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+            let uniqueVertices = data
+            if (data.flat() !== undefined) {
+                uniqueVertices = uniqueVertices.filter((vertex, index, self) => {
+                return index === self.findIndex((v) => areVerticesEqual(v, vertex));
+                });
+            }
+
+            const f32 = new Float32Array(uniqueVertices.flat())
+            gl.bufferData(gl.ARRAY_BUFFER, f32, mode)
+            
+            gl.vertexAttribPointer(loc, data[0].length, gl.FLOAT, false, 0, 0)
+            gl.enableVertexAttribArray(loc)
+            
+            return buf;
+        }
+
+        function setupGeomery(geom) {
+            console.log('geom', geom);
+            if (geom === undefined) {
+                return;
+            }
+            var triangleArray = gl.createVertexArray()
+            gl.bindVertexArray(triangleArray)
+            // console.log(geom.attributes.length);
+            for(let i=0; i<geom.attributes.length; i+=1) {
+                let data = geom.attributes[i]
+                supplyDataBuffer(data, i)
+            }
+            // var indices = new Uint16Array(geom.triangles.flat())
+            // var indexBuffer = gl.createBuffer()
+            // gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
+            // gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+
+            return {
+                mode: gl.TRIANGLES,
+                count: geom.attributes[0].length,
+                type: gl.UNSIGNED_SHORT,
+                vao: triangleArray
+            }
+        }
+
+        let geometry; 
+        let edges;
+
+        function Geometry() {
+            this.attributes = [[]];
+        }
+
+        /** Draw one frame */
+        const IdentityMatrix = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
+        function draw(seconds) {
+            if (window.geom == null) {
+                return;
+            }
+
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+            gl.useProgram(program)
+
+            gl.bindVertexArray(geom.vao)
+
+            gl.uniform4fv(program.uniforms.color, [216/255,197/255,150/255,1.0])
+            let cameraPos = [1.8*Math.cos(seconds*0.5),1.5*Math.sin(seconds*0.5),2.5]
+            let ld = normalize([1,1,1])
+            let h = normalize(add(ld, normalize(cameraPos)))
+            gl.uniform3fv(program.uniforms.lightdir, ld)
+            gl.uniform3fv(program.uniforms.lightcolor, [1,1,1])
+            gl.uniform3fv(program.uniforms.halfway, h)
+            let m = IdentityMatrix;
+            let v = m4view(cameraPos, [0,0,0], [0,0,1])
+            gl.uniformMatrix4fv(program.uniforms.mv, false, m4mul(v,m))
+            gl.uniformMatrix4fv(program.uniforms.p, false, p)
+            gl.drawArrays(geom.mode, 0, geom.count)
+            // gl.drawElements(geom.mode, geom.count, geom.type, 0)
+
+        }
+
+        function initializeGeom() {
+            const phi = (1 + Math.sqrt(5)) / 2;
+            let faces = [
+                [0, 11, 5],
+                [0, 5, 1],
+                [0, 1, 7],
+                [0, 7, 10],
+                [0, 10, 11],
+                [1, 5, 9],
+                [5, 11, 4],
+                [11, 10, 2],
+                [10, 7, 6],
+                [7, 1, 8],
+                [3, 9, 4],
+                [3, 4, 2],
+                [3, 2, 6],
+                [3, 6, 8],
+                [3, 8, 9],
+                [4, 9, 5],
+                [2, 4, 11],
+                [6, 2, 10],
+                [8, 6, 7],
+                [9, 8, 1],
+            ];
+            const vertices = [
+                normalize([-1, phi, 0]),
+                normalize([1, phi, 0]),
+                normalize([-1, -phi, 0]),
+                normalize([1, -phi, 0]),
+                normalize([0, -1, phi]),
+                normalize([0, 1, phi]),
+                normalize([0, -1, -phi]),
+                normalize([0, 1, -phi]),
+                normalize([phi, 0, -1]),
+                normalize([phi, 0, 1]),
+                normalize([-phi, 0, -1]),
+                normalize([-phi, 0, 1]),
+            ];
+
+            // geometry.triangles = faces;
+            //geometry.attributes[0] = vertices;
+            //geometry.attributes[1] = vertices;
+            geometry.attributes[0] = []
+            geometry.attributes[1] = []
+            edges = []
+            for (const face of faces) {
+                geometry.attributes[0].push(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+                geometry.attributes[1].push(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+                edges.push(formHalfEdgeTriangles(vertices[face[0]], vertices[face[1]], vertices[face[2]]));
+            }
+        }
+
+        function triangularSubdivision(levels) {
+            if (levels <= 0) {
+                return;
+            } else {
+                let newEdges = edges;
+                for (let i = 0; i < levels; i++) {
+                    newEdges = subdivisionToNextLevel(newEdges);
+                }
+                geometry.attributes[0] = []
+                for (const edge of newEdges) {
+                    geometry.attributes[0].push(edge.v, edge.next.v, edge.next.next.v);
+                    geometry.attributes[1] = geometry.attributes[0];
+                }
+                window.geom = setupGeomery(geometry);
+                edges = newEdges;
+            }
+
+        }
+
+        function addVectorsArray(v1, v2) {
+          if (v1.length !== v2.length) {
+            throw new Error('Vectors must have the same dimensionality');
+          }
+
+          return v1.map((value, index) => value + v2[index]);
+        }
+
+       
+        function formHalfEdgeTriangles(v1, v2, v3) {
+            
+            let halfEdge1 = new HalfEdge(v1, null, null)
+            let halfEdge2 = new HalfEdge(v2, halfEdge1, null)
+            let halfEdge3 = new HalfEdge(v3, halfEdge2, null);
+            halfEdge1.next = halfEdge3;
+
+            return halfEdge1;
+        }
+
+
+        function subdivisionToNextLevel(edges) {
+            let newEdges = []
+            for (let i = 0; i < edges.length; i++) {
+
+                const v1 = edges[i].v;
+                const v2 = edges[i].next.v;
+                const v3 = edges[i].next.next.v;
+
+                let middle1 = normalize(div(addVectorsArray(v1, v2),2));
+                let middle2 = normalize(div(addVectorsArray(v2, v3),2));
+                let middle3 = normalize(div(addVectorsArray(v1, v3),2));
+
+                //console.log(middle1, middle2, middle3);
+
+                let halfEdge1 = formHalfEdgeTriangles(v2, middle1, middle2);
+                newEdges.push(halfEdge1);
+
+                let halfEdge4 = formHalfEdgeTriangles(middle1, v1, middle3);
+                newEdges.push(halfEdge4);
+
+
+                let halfEdge7 = formHalfEdgeTriangles(middle2, middle3, v3);
+                newEdges.push(halfEdge7);
+
+
+                let halfEdge10 = formHalfEdgeTriangles(middle2, middle1, middle3);
+                newEdges.push(halfEdge10);
+            }
+            return newEdges;
+        }
+
+        function initializeIcosahedron() {
+            const phi = (1 + Math.sqrt(5)) / 2;
+            const vertices = [
+                [-1, phi, 0],
+                [1, phi, 0],
+                [-1, -phi, 0],
+                [1, -phi, 0],
+                [0, -1, phi],
+                [0, 1, phi],
+                [0, -1, -phi],
+                [0, 1, -phi],
+                [phi, 0, -1],
+                [phi, 0, 1],
+                [-phi, 0, -1],
+                [-phi, 0, 1],
+            ];
+        }
+
+
+        function tick(milliseconds) {
+            let seconds = milliseconds / 1000;
+            draw(seconds)
+            requestAnimationFrame(tick)
+        }
+
+        /** Compile, link, set up geometry */
+        window.addEventListener('load', async (event) => {
+            window.gl = document.querySelector('canvas').getContext('webgl2',
+                // optional configuration object: see https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/getContext
+                {antialias: false, depth:true, preserveDrawingBuffer:true}
+            )
+            let vs = document.querySelector('#vert').textContent.trim()
+            let fs = document.querySelector('#frag').textContent.trim()
+            window.program = compileShader(vs,fs)
+            gl.enable(gl.DEPTH_TEST)
+            gl.enable(gl.BLEND)
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+            window.geom = null;
+            geometry = new Geometry();
+            initializeGeom();
+            window.geom = setupGeomery(geometry);
+            fillScreen()
+            window.addEventListener('resize', fillScreen)
+            requestAnimationFrame(tick)
+        })
+
+        document.addEventListener('DOMContentLoaded', (event) => {
+            const levels = document.querySelector('#levels')
+            levels.addEventListener('change', function () {
+                const level = Number(levels.value) || 0;
+                if (level == 0) {
+                    initializeGeom();
+                    window.geom = setupGeomery(geometry);
+                } else {
+                    initializeGeom();
+                    triangularSubdivision(level);
+                }
+               
+            });
+
+            document.querySelector('#submit').addEventListener('click', event => {
+                const level = Number(levels.value) || 0
+                if (level == 0) {
+                    initializeGeom();
+                    window.geom = setupGeomery(geometry);
+                } else {
+                    initializeGeom();
+                    triangularSubdivision(level);
+                }          
+            })
+        });
+
+    </script>
+    <style>
+    body {
+        margin: 0; border: none; padding: 0;
+        display: flex; flex-direction: column;
+        width: 100%; height: 100vh;
+    }
+    .controls {
+        flex: 0 0 auto;
+    }
+    .controls > * { margin: 1em; }
+    .display {
+        flex-grow: 1;
+        line-height: 0rem;
+    }
+    </style>
+</head>
+<body>
+<form class="controls" action="javascript:void(0);">
+    <label>Levels: <input id="levels" type="number" value="0" min="0"/></label>
+    <input id="submit" type="submit" value="Make Object"/>
+</form>
+<div class="display">
+    <canvas width="300" height="300"></canvas>
+</div>
+</body>
+</html>
